@@ -91,3 +91,91 @@ def build_response(status_code: int, body: bytes, content_type='text/html; chars
     header_bytes = '\r\n'.join(header_lines).encode('utf-8')
     response = header_bytes + body
     return response
+
+
+def handle_connection(conn, addr):
+    try:
+        conn.settimeout(CONN_TIMEOUT)
+        headers_part, leftover = read_until_double_crlf(conn)
+        request_line, headers = parse_headers(headers_part)
+
+        # request line format: METHOD PATH PROTOCOL
+        parts = request_line.split()
+        if len(parts) < 3:
+            response = build_response(400, b'<h1>400 Bad Request</h1>')
+            conn.sendall(response)
+            return
+
+        method, raw_path, protocol = parts[0], parts[1], parts[2]
+        parsed = urlparse(raw_path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
+
+        body = b''
+        if method.upper() in ('POST', 'PUT', 'PATCH'):
+            content_length = int(headers.get('content-length', '0') or '0')
+            if content_length > MAX_BODY_BYTES:
+                response = build_response(
+                    413, b'<h1>413 Payload Too Large</h1>')
+                conn.sendall(response)
+            # leftover may already include part of the body
+            body = read_exact(conn, leftover, content_length)
+
+        # Simple routing
+        if method.upper() == 'GET' and path == '/':
+            html = f'<html><body><h1>Hello from improved server!</h1><p>{datetime.now(timezone.utc)} UTC</p></body></html>'
+            response = build_response(200, html.encode('utf-8'))
+            conn.sendall(response)
+            return
+
+        if method.upper() == 'GET' and path == '/ping':
+            response = build_response(
+                200, b'pong', content_type='text/plain; charset=utf-8')
+            return
+
+        if method.upper() == 'POST' and path == '/echo':
+            # echo headers and a preview of the body in simple HTML (for testing)
+            body_preview = body.decode('utf-8', errors='replace')[:1000]
+            html = '<html><body>'
+            html += '<h1>/echo</h1>'
+            html += '<h2>Received headers</h2><ul>'
+            for k, v in headers.items():
+                html += f'<li>{k}: {v}</li>'
+            html += f'</ul><h2>Body (first 1000 chars)</h2><pre>{body_preview}</pre>'
+            html += '</body></html>'
+            response = build_response(200, html.encode('utf-8'))
+            conn.sendall(response)
+            return
+
+        # default 404
+        response = build_response(404, b'<h1>404 Not Found</h1>')
+        conn.sendall(response)
+
+    except socket.timeout:
+        try:
+            conn.sendall(build_response(400, b'<h1>400 Request Timeout</h1>'))
+        except Exception:
+            pass
+
+    except ValueError as ve:
+        # our code may raise 'Headers too large' or 'Body too large'
+        try:
+            conn.sendall(build_response(
+                413, f'<h1>413</h1><p>{ve}</p>'.encode('utf-8')))
+        except Exception:
+            pass
+
+    except Exception as e:
+        # Prevent an unhandled exception from killing the whole server
+        try:
+            conn.sendall(build_response(
+                500, b'<h1>500 Internal Server Error</h1>'))
+        except Exception:
+            pass
+        print('Unhandled error while handling connection:', e)
+
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
