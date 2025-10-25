@@ -179,3 +179,23 @@ def handle_connection(conn, addr):
             conn.close()
         except Exception:
             pass
+
+
+def run():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind((HOST, PORT))
+        s.listen(BACKLOG)
+        print(f'Listening on http://{HOST}:{PORT} ...')
+        try:
+            while True:
+                conn, addr = s.accept()
+                # This simple server still handles each connection synchronously, accept() and recv() are blocking
+                print('Accepted connection from:', addr)
+                handle_connection(conn, addr)
+        except KeyboardInterrupt:
+            print('\nShutting down server.')
+
+
+if __name__ == '__main__':
+    run()
