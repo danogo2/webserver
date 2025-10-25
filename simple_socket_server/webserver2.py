@@ -10,7 +10,7 @@
 # 7. Make it concurrent (right now server cannot accept other clients while handle_request runs)
 
 import socket
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs
 
 HOST = '127.0.0.1'
@@ -65,6 +65,7 @@ def parse_headers(headers_bytes):
 def read_exact(conn, initial_data: bytes, nbytes: int):
     '''Read exactly nbytes bytes, using initial_data as already-read fragment'''
     data = bytearray(initial_data)
+    # combine initial data may be leftover already read after the headers with subsequent recv() calls
     while len(data) < nbytes:
         chunk = conn.recv(min(RECV_BLOCK, nbytes - len(data)))
         if not chunk:
@@ -73,3 +74,20 @@ def read_exact(conn, initial_data: bytes, nbytes: int):
         if len(data) > MAX_BODY_BYTES:
             raise ValueError('Body too large')
     return bytes(data)
+
+
+def build_response(status_code: int, body: bytes, content_type='text/html; charset=utf-8'):
+    reason = {200: 'OK', 400: 'Bad Request', 404: 'Not Found',
+              413: 'Payload Too Large', 500: 'Internal Server Error'}.get(status_code, 'OK')
+    header_lines = [
+        f'HTTP/1.1 {status_code} {reason}',
+        f'Date: {datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')}',
+        f'Content-Type: {content_type}',
+        f'Content-Length: {len(body)}',
+        'Connection: close',
+        '',
+        ''
+    ]
+    header_bytes = '\r\n'.join(header_lines).encode('utf-8')
+    response = header_bytes + body
+    return response
