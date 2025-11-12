@@ -1,0 +1,29 @@
+{
+  "scientists": [
+    {
+      "name": "Isaac Newton",
+      "field": "Physics",
+      "discovery": "Law of Universal Gravitation"
+    },
+    {
+      "name": "Marie Curie",
+      "field": "Chemistry",
+      "discovery": "Radioactivity"
+    },
+    {
+      "name": "Albert Einstein",
+      "field": "Theoretical Physics",
+      "discovery": "Theory of Relativity"
+    },
+    {
+      "name": "Charles Darwin",
+      "field": "Biology",
+      "discovery": "Theory of Evolution by Natural Selection"
+    },
+    {
+      "name": "Nikola Tesla",
+      "field": "Electrical Engineering",
+      "discovery": "Alternating Current (AC) System"
+    }
+  ]
+}

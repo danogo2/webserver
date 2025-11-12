@@ -12,6 +12,8 @@
 import socket
 from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs
+import json
+from json import JSONDecodeError
 
 HOST = '127.0.0.1'
 PORT = 8000
@@ -56,9 +58,9 @@ def parse_headers(headers_bytes):
             continue
         if ':' not in line:
             continue
-    # split only on first ':', because header values can contain ':'
-    name, value = line.split(':', 1)
-    headers[name.strip().lower()] = value.strip()
+        # split only on first ':', because header values can contain ':'
+        name, value = line.split(':', 1)
+        headers[name.strip().lower()] = value.strip()
     return request_line, headers
 
 
@@ -95,6 +97,7 @@ def build_response(status_code: int, body: bytes, content_type='text/html; chars
 
 def handle_connection(conn, addr):
     try:
+        # Set a socket-level timeout so subsequent blocking recv() calls raise socket.timeout if client is too slow or stalls
         conn.settimeout(CONN_TIMEOUT)
         headers_part, leftover = read_until_double_crlf(conn)
         request_line, headers = parse_headers(headers_part)
@@ -131,6 +134,7 @@ def handle_connection(conn, addr):
         if method.upper() == 'GET' and path == '/ping':
             response = build_response(
                 200, b'pong', content_type='text/plain; charset=utf-8')
+            conn.sendall(response)
             return
 
         if method.upper() == 'POST' and path == '/echo':
@@ -147,6 +151,53 @@ def handle_connection(conn, addr):
             conn.sendall(response)
             return
 
+        if method.upper() == 'POST' and path == '/echo-json':
+            content_type = headers.get('content-type', '')
+            if 'application/json' not in content_type:
+                # Not JSON - respond 400 or 415. Here we use 400 for simplicity
+                msg = b'{"error":"expected Content-Type: application/json"}'
+                response = build_response(
+                    400, msg, content_type='application/json; charset=utf-8')
+                conn.sendall(response)
+                return
+
+            # body is bytes - decode or pass directly to json.loads after decoding
+            try:
+                text = body.decode('utf-8')  # decode bytes to string
+            except Exception:
+                response = build_response(
+                    400, b'{"error":":"invalid utf-8 in request body"}', content_type='application/json; charset=utf-8')
+                conn.sendall(response)
+                return
+
+            try:
+                # parse JSON -> Python object (dict/list)
+                parsed = json.loads(text)
+            except JSONDecodeError as e:
+                # invalid JSON -> 400 Bad Request
+                err_obj = {'error': 'invalid json', 'detail': str(e)}
+                err_bytes = json.dumps(
+                    err_obj, ensure_ascii=False).encode('utf-8')
+                response = build_response(
+                    400, err_bytes, content_type='application/json; charset=utf-8')
+                conn.sendall(response)
+                return
+
+            # No errors - Build response object: include received and some meta headers
+            resp_obj = {
+                'received': parsed,
+                'meta': {
+                    'content-length': headers.get('content-length', ''),
+                    'content-type': headers.get('content-type', '')
+                }
+            }
+            resp_bytes = json.dumps(
+                resp_obj, ensure_ascii=False).encode('utf-8')
+            response = build_response(
+                200, resp_bytes, content_type='application/json; charset=utf-8')
+            conn.sendall(response)
+            return
+
         # default 404
         response = build_response(404, b'<h1>404 Not Found</h1>')
         conn.sendall(response)
@@ -156,7 +207,6 @@ def handle_connection(conn, addr):
             conn.sendall(build_response(400, b'<h1>400 Request Timeout</h1>'))
         except Exception:
             pass
-
     except ValueError as ve:
         # our code may raise 'Headers too large' or 'Body too large'
         try:
@@ -164,7 +214,6 @@ def handle_connection(conn, addr):
                 413, f'<h1>413</h1><p>{ve}</p>'.encode('utf-8')))
         except Exception:
             pass
-
     except Exception as e:
         # Prevent an unhandled exception from killing the whole server
         try:
@@ -173,7 +222,6 @@ def handle_connection(conn, addr):
         except Exception:
             pass
         print('Unhandled error while handling connection:', e)
-
     finally:
         try:
             conn.close()
@@ -191,7 +239,7 @@ def run():
             while True:
                 conn, addr = s.accept()
                 # This simple server still handles each connection synchronously, accept() and recv() are blocking
-                print('Accepted connection from:', addr)
+                print('Accepted connection from: ', addr)
                 handle_connection(conn, addr)
         except KeyboardInterrupt:
             print('\nShutting down server.')
