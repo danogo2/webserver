@@ -15,7 +15,7 @@ from urllib.parse import urlparse, parse_qs
 import json
 from json import JSONDecodeError
 
-HOST = '127.0.0.1'
+HOST = '127.0.0.1'  # localhost
 PORT = 8000
 BACKLOG = 5
 RECV_BLOCK = 4096
@@ -67,7 +67,7 @@ def parse_headers(headers_bytes):
 def read_exact(conn, initial_data: bytes, nbytes: int):
     '''Read exactly nbytes bytes, using initial_data as already-read fragment'''
     data = bytearray(initial_data)
-    # combine initial data may be leftover already read after the headers with subsequent recv() calls
+    # combine initial data (that is leftover from already read headers, bytes after '\r\n\r\n' in the same recv() call in read_until_double_crlf) with subsequent recv() calls
     while len(data) < nbytes:
         chunk = conn.recv(min(RECV_BLOCK, nbytes - len(data)))
         if not chunk:
@@ -83,7 +83,7 @@ def build_response(status_code: int, body: bytes, content_type='text/html; chars
               413: 'Payload Too Large', 500: 'Internal Server Error'}.get(status_code, 'OK')
     header_lines = [
         f'HTTP/1.1 {status_code} {reason}',
-        f'Date: {datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')}',
+        f'Date: {datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")}',
         f'Content-Type: {content_type}',
         f'Content-Length: {len(body)}',
         'Connection: close',
@@ -95,6 +95,19 @@ def build_response(status_code: int, body: bytes, content_type='text/html; chars
     return response
 
 
+def write_log(client_ip_port, method, path, code, response_size=0):
+    log_msg = f'''\nTimestamp: {datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')}
+Client IP: {client_ip_port[0]}
+Client PORT: {client_ip_port[1]}
+Method: {method}
+Path: {path}
+Response code: {code}
+Response size: {response_size}
+    '''
+    with open('server.log', 'a') as f:
+        f.write(log_msg)
+
+
 def handle_connection(conn, addr):
     try:
         # Set a socket-level timeout so subsequent blocking recv() calls raise socket.timeout if client is too slow or stalls
@@ -102,7 +115,7 @@ def handle_connection(conn, addr):
         headers_part, leftover = read_until_double_crlf(conn)
         request_line, headers = parse_headers(headers_part)
 
-        # request line format: METHOD PATH PROTOCOL
+        # request line format: METHOD PATH PROTOCOL eg. GET /search?name=Alice HTTP/1.1
         parts = request_line.split()
         if len(parts) < 3:
             response = build_response(400, b'<h1>400 Bad Request</h1>')
@@ -121,6 +134,7 @@ def handle_connection(conn, addr):
                 response = build_response(
                     413, b'<h1>413 Payload Too Large</h1>')
                 conn.sendall(response)
+                write_log(addr, method.upper(), path, 413, len(response))
             # leftover may already include part of the body
             body = read_exact(conn, leftover, content_length)
 
@@ -129,12 +143,25 @@ def handle_connection(conn, addr):
             html = f'<html><body><h1>Hello from improved server!</h1><p>{datetime.now(timezone.utc)} UTC</p></body></html>'
             response = build_response(200, html.encode('utf-8'))
             conn.sendall(response)
+            write_log(addr, method.upper(), path, 200, len(response))
             return
 
         if method.upper() == 'GET' and path == '/ping':
             response = build_response(
                 200, b'pong', content_type='text/plain; charset=utf-8')
             conn.sendall(response)
+            write_log(addr, method.upper(), path, 200, len(response))
+            return
+
+        if method.upper() == 'GET' and path == '/search':
+            list_items = ''
+            for key, value in query.items():
+                list_items += f'<li>{key} {value[0]}</li>'
+            html = f'<html><body><ul>{list_items}</ul></body></html>'
+            response = build_response(
+                200, html.encode('utf-8'), content_type='text/html; charset=utf-8')
+            conn.sendall(response)
+            write_log(addr, method.upper(), path, 200, len(response))
             return
 
         if method.upper() == 'POST' and path == '/echo':
@@ -149,6 +176,7 @@ def handle_connection(conn, addr):
             html += '</body></html>'
             response = build_response(200, html.encode('utf-8'))
             conn.sendall(response)
+            write_log(addr, method.upper(), path, 200, len(response))
             return
 
         if method.upper() == 'POST' and path == '/echo-json':
@@ -159,6 +187,7 @@ def handle_connection(conn, addr):
                 response = build_response(
                     400, msg, content_type='application/json; charset=utf-8')
                 conn.sendall(response)
+                write_log(addr, method.upper(), path, 400, len(response))
                 return
 
             # body is bytes - decode or pass directly to json.loads after decoding
@@ -166,8 +195,9 @@ def handle_connection(conn, addr):
                 text = body.decode('utf-8')  # decode bytes to string
             except Exception:
                 response = build_response(
-                    400, b'{"error":":"invalid utf-8 in request body"}', content_type='application/json; charset=utf-8')
+                    400, b'{"error":"invalid utf-8 in request body"}', content_type='application/json; charset=utf-8')
                 conn.sendall(response)
+                write_log(addr, method.upper(), path, 400, len(response))
                 return
 
             try:
@@ -181,6 +211,7 @@ def handle_connection(conn, addr):
                 response = build_response(
                     400, err_bytes, content_type='application/json; charset=utf-8')
                 conn.sendall(response)
+                write_log(addr, method.upper(), path, 400, len(response))
                 return
 
             # No errors - Build response object: include received and some meta headers
@@ -196,11 +227,39 @@ def handle_connection(conn, addr):
             response = build_response(
                 200, resp_bytes, content_type='application/json; charset=utf-8')
             conn.sendall(response)
+            write_log(addr, method.upper(), path, 200, len(response))
             return
+
+        if method.upper() == 'POST' and path == '/echo-form':
+            content_type = headers.get('content-type', '')
+            if 'application/x-www-form-urlencoded' not in content_type:
+                # Not form-urlencoded - respond with 400
+                msg = b'{"error":"expected Content-Type: application/x-www-form-urlencoded"}'
+                response = build_response(
+                    400, msg, 'application/x-www-form-urlencoded')
+                conn.sendall(response)
+                write_log(addr, method.upper(), path, 400, len(response))
+                return
+
+            try:
+                body_queries = parse_qs(body.decode('utf-8'))
+                list_items = ''
+                for key, value in body_queries.items():
+                    list_items += f'<li>{key} {value[0]}</li>'
+                html = f'<html><body><ul>{list_items}</ul></body></html>'
+                response = build_response(
+                    200,  html.encode('utf-8'), content_type='text/html; charset=utf-8')
+                conn.sendall(response)
+                write_log(addr, method.upper(), path, 200, len(response))
+                return
+            except Exception as e:
+                print(f'error: {e}')
+                return
 
         # default 404
         response = build_response(404, b'<h1>404 Not Found</h1>')
         conn.sendall(response)
+        write_log(addr, method.upper(), path, 404, len(response))
 
     except socket.timeout:
         try:
